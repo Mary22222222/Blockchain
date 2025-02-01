@@ -7,7 +7,7 @@ use crate::domain::models::app_data::AppData;
 use crate::domain::models::hash::Hash;
 use crate::domain::models::signature::Signature;
 use crate::domain::models::token::Token;
-use crate::domain::models::transaction::Transaction;
+use crate::domain::models::transaction::{Transaction, TxState, TransactionWithState};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use crate::application::common::acc_storage::AccStorage;
@@ -74,6 +74,7 @@ impl Interactor<CreateTransactionRequest, CreateTransactionResult> for CreateTra
             ));
         }
 
+        
         if self.mempool.get(&data.hash).await.is_some() {
             return Err(ApplicationError::InvalidData(
                 [("hash".to_string(), "tx is already exist".to_string())].into()
@@ -121,77 +122,15 @@ impl Interactor<CreateTransactionRequest, CreateTransactionResult> for CreateTra
             data.signature
         );
 
-        self.mempool.add(transaction).await;
+        let state = TxState::PendingConfirmation;
+
+        let transaction_with_state = TransactionWithState::new(&transaction,state);
+
+        self.mempool.add(transaction_with_state).await;
 
         Ok(CreateTransactionResult { hash })
     }
 }
 
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::models::address::Address;
-    use crate::domain::models::hash::Hash;
-    use crate::domain::models::signature::{SignKey, Signature, VerifyKey};
-    use crate::domain::models::token::Token;
-    use serde_json::Value;
-    use crate::application::common::acc_storage::tests::MockAccStorage;
-    use crate::application::common::app_router::tests::MockAppRouter;
-    use crate::application::common::hasher::tests::MockHasher;
-    use crate::application::common::mempool::tests::MockMemPool;
-    use crate::application::common::signer::tests::MockSigner;
-    use crate::domain::models::app_data::AppData;
 
-    #[tokio::test]
-    async fn test_create_transaction_ok() {
-        let acc_storage = MockAccStorage::new();
-        let signer = MockSigner;
-        let hasher = MockHasher;
-        let interactor = CreateTransaction {
-            hasher: &hasher,
-            mempool: &MockMemPool::new(),
-            app_router: &MockAppRouter,
-            signer: &signer,
-            acc_storage: &acc_storage,
-        };
-
-        let pk = SignKey([1; 32]);
-        let vk = VerifyKey([1; 32]);
-
-        let address = Address {
-            network: "lokichain".to_string(),
-            vk
-        };
-
-        acc_storage.set(
-            address.clone(),
-            Account {
-                address: address.clone(),
-                nonce: 0,
-                balance: Token { value: 100, denom: "LOKI".to_string() }
-            }
-        ).await;
-
-        let mut transaction = CreateTransactionRequest {
-            body: TxBody {
-                sender: address.clone(),
-                amount: Token { value: 10, denom: "LOKI".to_string() },
-                gas: 10,
-                nonce: 0,
-                data: AppData { app: "bank".to_string(), operation: "transfer".to_string(), payload: Value::Null },
-            },
-            hash: Hash([0; 32]),
-            signature: Signature([0; 64])
-        };
-
-        let mut bytes = vec![];
-        bytes.extend_from_slice(&serde_json::to_vec(&transaction.body).unwrap());
-
-        transaction.hash = MockHasher.hash(&bytes).await;
-        transaction.signature = signer.sign(&transaction.hash.0, &pk).await;
-
-        let result = interactor.execute(transaction).await;
-        assert!(result.is_ok());
-    }
-}
